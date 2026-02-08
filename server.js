@@ -1,75 +1,94 @@
-import WebSocket, { WebSocketServer } from "ws";
+import express from "express";
+import multer from "multer";
+import fs from "fs";
+import fetch from "node-fetch";
+import FormData from "form-data";
 
-const PORT = process.env.PORT || 8080;
+const app = express();
+const upload = multer({ dest: "tmp/" });
+
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-const wss = new WebSocketServer({ port: PORT });
-console.log("☁️ Cloud relay listening on port", PORT);
+app.post("/voice", upload.single("audio"), async (req, res) => {
+  try {
+    /* ======================
+       1. WHISPER STT
+       ====================== */
+    const sttForm = new FormData();
+    sttForm.append("file", fs.createReadStream(req.file.path));
+    sttForm.append("model", "whisper-1");
 
-function connectToOpenAI() {
-  const ws = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-    {
-      headers: {
-        "Authorization": `Bearer ${OPENAI_KEY}`,
-        "OpenAI-Beta": "realtime=v1"
+    const sttRes = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_KEY}`,
+        },
+        body: sttForm,
       }
-    }
-  );
+    );
 
-  ws.on("open", () => {
-    console.log("✅ OpenAI socket OPEN");
+    const stt = await sttRes.json();
+    const userText = stt.text || "";
 
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        instructions: "You are a helpful robot assistant.",
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        voice: "alloy"
+    /* ======================
+       2. GPT-4o-mini
+       ====================== */
+    const gptRes = await fetch(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          input: userText,
+          instructions: "Answer briefly and clearly.",
+        }),
       }
-    }));
-  });
+    );
 
-  ws.on("message", msg => {
-    const event = JSON.parse(msg.toString());
-    ws.onEvent && ws.onEvent(event);
-  });
+    const gpt = await gptRes.json();
+    const reply =
+      gpt.output_text ||
+      gpt.output?.[0]?.content?.[0]?.text ||
+      "I did not understand.";
 
-  ws.on("close", (c, r) => {
-    console.log("❌ OpenAI socket closed", c, r.toString());
-  });
+    /* ======================
+       3. TTS
+       ====================== */
+    const ttsRes = await fetch(
+      "https://api.openai.com/v1/audio/speech",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini-tts",
+          voice: "alloy",
+          input: reply,
+          response_format: "wav",
+        }),
+      }
+    );
 
-  return ws;
-}
+    const audio = Buffer.from(await ttsRes.arrayBuffer());
 
-wss.on("connection", esp => {
-  console.log("✅ ESP32 connected");
+    fs.unlinkSync(req.file.path);
 
-  const ai = connectToOpenAI();
+    res.set("Content-Type", "audio/wav");
+    res.send(audio);
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Error");
+  }
+});
 
-  esp.on("message", data => {
-    if (ai.readyState === WebSocket.OPEN) {
-      ai.send(JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: Buffer.from(data).toString("base64")
-      }));
-    }
-  });
-
-  ai.onEvent = event => {
-    if (event.type === "response.audio.delta") {
-      esp.send(Buffer.from(event.delta, "base64"));
-    }
-
-    if (event.type === "response.audio.done") {
-      // stop playback cleanly
-      esp.send(Buffer.alloc(0));
-    }
-  };
-
-  esp.on("close", () => {
-    console.log("ESP32 disconnected");
-    ai.close();
-  });
+app.listen(8080, () => {
+  console.log("✅ Voice cloud running on 8080");
 });
