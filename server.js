@@ -3,7 +3,6 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 
 const app = express();
-// Receive raw binary audio data
 app.use(express.raw({ type: 'audio/wav', limit: '10mb' }));
 
 const PORT = process.env.PORT || 8080;
@@ -12,9 +11,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 app.post("/voice", async (req, res) => {
   try {
     const audioBuffer = req.body;
-    if (!audioBuffer || audioBuffer.length < 100) {
-      return res.status(400).send("No audio received");
-    }
+    if (!audioBuffer || audioBuffer.length < 100) return res.status(400).send("No audio");
+
     console.log(`🎤 Received ${audioBuffer.length} bytes`);
 
     // 1. Whisper STT
@@ -28,44 +26,37 @@ app.post("/voice", async (req, res) => {
       body: sttForm
     });
     const sttJson = await sttResp.json();
+    if (!sttJson.text) throw new Error("STT Failed");
     console.log("🗣 User:", sttJson.text);
 
-    // 2. ChatGPT Response
+    // 2. Chat GPT
     const llmResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: "You are a helpful assistant. Keep responses very short (1 sentence)." },
-          { role: "user", content: sttJson.text }
-        ]
+        messages: [{ role: "system", content: "Keep answers very short (1 sentence)." }, { role: "user", content: sttJson.text }]
       })
     });
     const llmJson = await llmResp.json();
     const answer = llmJson.choices[0].message.content;
     console.log("🤖 GPT:", answer);
 
-    // 3. Text-to-Speech
+    // 3. TTS
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "tts-1",
-        voice: "alloy",
-        input: answer,
-        response_format: "wav"
-      })
+      body: JSON.stringify({ model: "tts-1", voice: "alloy", input: answer, response_format: "wav" })
     });
 
-    console.log("🔊 Streaming audio back...");
+    console.log("🔊 Streaming audio...");
     res.setHeader("Content-Type", "audio/wav");
-    // Pipe the audio stream directly to the ESP32
+    res.setHeader("Connection", "close"); // Force connection close after stream
     ttsResp.body.pipe(res);
 
   } catch (err) {
     console.error("❌ Error:", err.message);
-    res.status(500).send("Internal Server Error");
+    res.status(500).send("Server Error");
   }
 });
 
