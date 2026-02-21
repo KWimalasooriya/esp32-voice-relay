@@ -6,7 +6,6 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Accept raw WAV audio up to 10MB
 app.use(express.raw({ type: "audio/wav", limit: "10mb" }));
 
 app.post("/voice", async (req, res) => {
@@ -38,9 +37,9 @@ app.post("/voice", async (req, res) => {
 
     const sttJson = await sttResp.json();
 
-    if (!sttJson.text) {
-      console.error("❌ STT Failed:", JSON.stringify(sttJson));
-      return res.status(500).send("STT failed");
+    if (!sttJson.text || sttJson.text.trim() === "") {
+      console.error("❌ STT Failed or empty:", JSON.stringify(sttJson));
+      return res.status(500).send("STT failed - audio may be silent");
     }
 
     console.log("🗣  User:", sttJson.text);
@@ -57,8 +56,7 @@ app.post("/voice", async (req, res) => {
         messages: [
           {
             role: "system",
-            content:
-              "You are a helpful voice assistant. Keep your answers very short — 1 to 2 sentences maximum.",
+            content: "You are a helpful voice assistant. Keep answers short — 1 to 2 sentences.",
           },
           { role: "user", content: sttJson.text },
         ],
@@ -75,7 +73,10 @@ app.post("/voice", async (req, res) => {
     const answer = llmJson.choices[0].message.content.trim();
     console.log("🤖 GPT:", answer);
 
-    // ── STEP 3: TTS ─────────────────────────────────────────
+    // ── STEP 3: TTS — buffer fully before sending ───────────
+    // IMPORTANT: We buffer the entire TTS response so we can send
+    // Content-Length. This prevents chunked transfer encoding which
+    // confuses the ESP32 WAV parser.
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
@@ -86,7 +87,7 @@ app.post("/voice", async (req, res) => {
         model: "gpt-4o-mini-tts",
         voice: "alloy",
         input: answer,
-        response_format: "wav", // WAV = 24000 Hz PCM from OpenAI
+        response_format: "wav",
       }),
     });
 
@@ -96,21 +97,19 @@ app.post("/voice", async (req, res) => {
       return res.status(500).send("TTS failed");
     }
 
-    console.log("🔊 Streaming audio response to ESP32...");
+    // Buffer the entire WAV into memory
+    const ttsArrayBuffer = await ttsResp.arrayBuffer();
+    const ttsBuffer = Buffer.from(ttsArrayBuffer);
 
+    console.log(`🔊 Sending ${ttsBuffer.length} bytes of audio (no chunking)...`);
+
+    // Send with explicit Content-Length so ESP32 gets clean WAV bytes
     res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Content-Length", ttsBuffer.length);
     res.setHeader("Connection", "close");
+    res.end(ttsBuffer);
 
-    // Pipe TTS audio directly to ESP32
-    ttsResp.body.pipe(res);
-
-    ttsResp.body.on("end", () => {
-      console.log("✅ Audio stream complete.");
-    });
-
-    ttsResp.body.on("error", (err) => {
-      console.error("❌ Stream error:", err.message);
-    });
+    console.log("✅ Audio sent.");
 
   } catch (err) {
     console.error("❌ Unhandled Error:", err.message);
