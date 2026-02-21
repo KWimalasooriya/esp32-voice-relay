@@ -83,7 +83,7 @@ app.post("/voice", async (req, res) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "tts-1",
+        model: "gpt-4o-mini-tts",
         voice: "alloy",
         input: answer,
         response_format: "wav", // WAV = 24000 Hz PCM from OpenAI
