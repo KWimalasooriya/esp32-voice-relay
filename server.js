@@ -20,7 +20,6 @@ app.post("/voice", async (req, res) => {
     const sttForm = new FormData();
     sttForm.append("file", audioBuffer, { filename: "audio.wav", contentType: "audio/wav" });
     sttForm.append("model", "whisper-1");
-
     const sttResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...sttForm.getHeaders() },
@@ -39,9 +38,7 @@ app.post("/voice", async (req, res) => {
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        max_tokens: 25,  // hard cap — ~8 words max, GPT cannot exceed this
         messages: [
-          // Strict: one short sentence only — less text = less audio = faster
           { role: "system", content: "You are a voice assistant. Reply as a known friend — casual, warm, and natural." },
           { role: "user", content: sttJson.text },
         ],
@@ -52,9 +49,7 @@ app.post("/voice", async (req, res) => {
     const answer = llmJson.choices[0].message.content.trim();
     console.log("🤖 GPT:", answer);
 
-    // ── TTS → raw PCM (no WAV header) ───────────────────────
-    // pcm format = raw 24kHz 16-bit mono samples, no header at all.
-    // ESP32 can pipe bytes directly to I2S with zero parsing.
+    // ── TTS — WAV format (confirmed working with ESP32) ──────
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -62,24 +57,22 @@ app.post("/voice", async (req, res) => {
         model: "gpt-4o-mini-tts",
         voice: "alloy",
         input: answer,
-        response_format: "pcm",  // ← raw PCM, no header, smallest possible
+        response_format: "wav",  // WAV — confirmed working, ESP32 skips 44-byte header
       }),
     });
-
     if (!ttsResp.ok) {
       const err = await ttsResp.text();
       console.error("❌ TTS Failed:", err);
       return res.status(500).send("TTS failed");
     }
 
-    // Send raw 24kHz PCM — ESP32 plays at 12kHz stereo (proven working config)
-    const pcmBuffer = Buffer.from(await ttsResp.arrayBuffer());
-    console.log(`🔊 Sending ${pcmBuffer.length} bytes PCM (24kHz)...`);
+    const wavBuffer = Buffer.from(await ttsResp.arrayBuffer());
+    console.log(`🔊 Sending ${wavBuffer.length} bytes WAV...`);
 
-    res.setHeader("Content-Type", "audio/pcm");
-    res.setHeader("Content-Length", pcmBuffer.length);
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Content-Length", wavBuffer.length);
     res.setHeader("Connection", "close");
-    res.end(pcmBuffer);
+    res.end(wavBuffer);
     console.log("✅ Done.");
 
   } catch (err) {
