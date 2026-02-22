@@ -41,7 +41,7 @@ app.post("/voice", async (req, res) => {
         model: "gpt-4o-mini",
         messages: [
           // Strict: one short sentence only — less text = less audio = faster
-          { role: "system", content: "You are a voice assistant. Reply in ONE short sentence only. Maximum 15 words." },
+          { role: "system", content: "You are a voice assistant. Reply like a known friend." },
           { role: "user", content: sttJson.text },
         ],
       }),
