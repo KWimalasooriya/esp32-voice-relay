@@ -8,7 +8,20 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 app.use(express.raw({ type: "audio/wav", limit: "10mb" }));
 
-// Downsample 24kHz PCM → 8kHz (keep every 3rd sample, average for anti-alias)
+// ── Detect emotion from GPT response text ────────────────────
+// Returns: "HAPPY", "ANGRY", "TIRED", "DEFAULT"
+function detectEmotion(text) {
+  const t = text.toLowerCase();
+  if (t.match(/happy|great|awesome|wonderful|love|yay|haha|fantastic|excited|fun|cool|amazing|glad|joy|pleasure/))
+    return "HAPPY";
+  if (t.match(/sorry|tired|exhaust|boring|ugh|meh|sleepy|unfortunately|sadly|miss|lost/))
+    return "TIRED";
+  if (t.match(/angry|mad|furious|annoyed|frustrated|stop|wrong|bad|hate|terrible|awful|don't|cant believe/))
+    return "ANGRY";
+  return "DEFAULT";
+}
+
+// ── Downsample 24kHz PCM → 8kHz ─────────────────────────────
 function downsample24to8(pcm24k) {
   const inSamples  = pcm24k.length / 2;
   const outSamples = Math.floor(inSamples / 3);
@@ -22,22 +35,16 @@ function downsample24to8(pcm24k) {
   return out;
 }
 
-// Wrap PCM in WAV header
+// ── Wrap PCM in WAV header ───────────────────────────────────
 function pcmToWav(pcm, sampleRate) {
   const header = Buffer.alloc(44);
-  header.write("RIFF", 0, "ascii");
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8, "ascii");
-  header.write("fmt ", 12, "ascii");
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1,  20);              // PCM
-  header.writeUInt16LE(1,  22);              // mono
-  header.writeUInt32LE(sampleRate, 24);
+  header.write("RIFF", 0, "ascii");  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8, "ascii");  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);      header.writeUInt16LE(1,  20);
+  header.writeUInt16LE(1,  22);      header.writeUInt32LE(sampleRate, 24);
   header.writeUInt32LE(sampleRate * 2, 28);
-  header.writeUInt16LE(2,  32);
-  header.writeUInt16LE(16, 34);
-  header.write("data", 36, "ascii");
-  header.writeUInt32LE(pcm.length, 40);
+  header.writeUInt16LE(2,  32);      header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii"); header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
 }
 
@@ -48,7 +55,7 @@ app.post("/voice", async (req, res) => {
       return res.status(400).send("No audio");
     console.log(`🎤 Received ${audioBuffer.length} bytes`);
 
-    // ── STT ────────────────────────────────────────────────
+    // ── STT ──────────────────────────────────────────────────
     const sttForm = new FormData();
     sttForm.append("file", audioBuffer, { filename: "audio.wav", contentType: "audio/wav" });
     sttForm.append("model", "whisper-1");
@@ -64,14 +71,14 @@ app.post("/voice", async (req, res) => {
     }
     console.log("🗣  User:", sttJson.text);
 
-    // ── GPT ────────────────────────────────────────────────
+    // ── GPT ──────────────────────────────────────────────────
     const llmResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "You are a voice assistant. Reply as a known friend — casual, warm, and natural." },
+          { role: "system", content: "You are a cute robot companion named Robo. You are warm, expressive, and friendly. Reply naturally like a close friend." },
           { role: "user", content: sttJson.text },
         ],
       }),
@@ -81,9 +88,11 @@ app.post("/voice", async (req, res) => {
     const answer = llmJson.choices[0].message.content.trim();
     console.log("🤖 GPT:", answer);
 
-    // ── TTS → downsample 24kHz→8kHz → send WAV ─────────────
-    // 8kHz = 16KB/s playback. TLS delivers ~25KB/s.
-    // 9KB/s surplus allows ESP32 to stream+play simultaneously.
+    // ── Detect emotion from response ─────────────────────────
+    const emotion = detectEmotion(answer);
+    console.log(`😊 Emotion: ${emotion}`);
+
+    // ── TTS → downsample to 8kHz ─────────────────────────────
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -91,7 +100,7 @@ app.post("/voice", async (req, res) => {
         model: "gpt-4o-mini-tts",
         voice: "nova",
         input: answer,
-        response_format: "pcm",  // raw 24kHz PCM — we downsample it
+        response_format: "pcm",
       }),
     });
     if (!ttsResp.ok) {
@@ -103,10 +112,13 @@ app.post("/voice", async (req, res) => {
     const pcm8k  = downsample24to8(pcm24k);
     const wav8k  = pcmToWav(pcm8k, 8000);
 
-    console.log(`🔊 24kHz ${pcm24k.length}B → 8kHz ${wav8k.length}B (${Math.round(wav8k.length/pcm24k.length*100)}%) — streamable!`);
+    console.log(`🔊 ${pcm24k.length}B → ${wav8k.length}B (8kHz) | Emotion: ${emotion}`);
 
+    // Send emotion in header — ESP32 reads this to set eye expression
     res.setHeader("Content-Type", "audio/wav");
     res.setHeader("Content-Length", wav8k.length);
+    res.setHeader("X-Emotion", emotion);       // ← ESP32 reads this
+    res.setHeader("X-Text", answer.substring(0, 100)); // first 100 chars for debug
     res.setHeader("Connection", "close");
     res.end(wav8k);
     console.log("✅ Done.");
@@ -117,4 +129,4 @@ app.post("/voice", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Robot server running on port ${PORT}`));
