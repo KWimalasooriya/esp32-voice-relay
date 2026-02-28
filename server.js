@@ -12,11 +12,16 @@ app.use(express.raw({ type: "audio/wav", limit: "10mb" }));
 // Returns: "HAPPY", "ANGRY", "TIRED", "DEFAULT"
 function detectEmotion(text) {
   const t = text.toLowerCase();
-  if (t.match(/happy|great|awesome|wonderful|love|yay|haha|fantastic|excited|fun|cool|amazing|glad|joy|pleasure/))
+  // Check emojis first
+  if (text.match(/😊|😄|😃|😁|🎉|✨|😍|🥰|😂|🤣/)) return "HAPPY";
+  if (text.match(/😢|😭|😔|😞|💔|😩|😫/))              return "TIRED";
+  if (text.match(/😠|😡|🤬|💢/))                        return "ANGRY";
+  // Then keywords
+  if (t.match(/happy|great|awesome|wonderful|love|yay|haha|fantastic|excited|fun|cool|amazing|glad|joy|brighten/))
     return "HAPPY";
-  if (t.match(/sorry|tired|exhaust|boring|ugh|meh|sleepy|unfortunately|sadly|miss|lost/))
+  if (t.match(/sorry|tired|exhaust|boring|ugh|meh|sleepy|unfortunately|sadly/))
     return "TIRED";
-  if (t.match(/angry|mad|furious|annoyed|frustrated|stop|wrong|bad|hate|terrible|awful|don't|cant believe/))
+  if (t.match(/angry|mad|furious|annoyed|frustrated|wrong|terrible/))
     return "ANGRY";
   return "DEFAULT";
 }
@@ -117,8 +122,7 @@ app.post("/voice", async (req, res) => {
     // Send emotion in header — ESP32 reads this to set eye expression
     res.setHeader("Content-Type", "audio/wav");
     res.setHeader("Content-Length", wav8k.length);
-    res.setHeader("X-Emotion", emotion);       // ← ESP32 reads this
-    res.setHeader("X-Text", answer.substring(0, 100)); // first 100 chars for debug
+    res.setHeader("X-Emotion", emotion);
     res.setHeader("Connection", "close");
     res.end(wav8k);
     console.log("✅ Done.");
