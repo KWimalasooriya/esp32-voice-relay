@@ -132,7 +132,7 @@ app.post("/voice", async (req, res) => {
     }
 
     const pcm24k = Buffer.from(await ttsResp.arrayBuffer());
-    const pitched = pitchUp(pcm24k, 1.4);   // 🔥 chipmunk effect
+    const pitched = pitchUp(pcm24k, 1.2);   // 🔥 chipmunk effect
     const pcm8k  = downsample24to8(pitched);
     const wav8k  = pcmToWav(pcm8k, 8000);
 
