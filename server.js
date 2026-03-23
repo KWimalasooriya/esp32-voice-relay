@@ -123,7 +123,7 @@ app.post("/voice", async (req, res) => {
         voice: "nova",
         input: `Say this in a cute, high-pitched, playful, energetic, tiny robot voice: ${answer}`,
         response_format: "pcm",
-        speed: 1.3
+        speed: 1.0
       }),
     });
     if (!ttsResp.ok) {
