@@ -12,30 +12,17 @@ app.use(express.raw({ type: "audio/wav", limit: "10mb" }));
 // Returns: "HAPPY", "ANGRY", "TIRED", "DEFAULT"
 function detectEmotion(text) {
   const t = text.toLowerCase();
-
-  // Emojis
+  // Check emojis first
   if (text.match(/😊|😄|😃|😁|🎉|✨|😍|🥰|😂|🤣/)) return "HAPPY";
-  if (text.match(/😢|😭|😔|😞|💔|😩|😫/)) return "TIRED";
-  if (text.match(/😠|😡|🤬|💢/)) return "ANGRY";
-
-  // English keywords
-  if (t.match(/happy|great|awesome|wonderful|love|yay|haha|fantastic|excited|fun|cool|amazing|glad|joy/))
+  if (text.match(/😢|😭|😔|😞|💔|😩|😫/))              return "TIRED";
+  if (text.match(/😠|😡|🤬|💢/))                        return "ANGRY";
+  // Then keywords
+  if (t.match(/happy|great|awesome|wonderful|love|yay|haha|fantastic|excited|fun|cool|amazing|glad|joy|brighten/))
     return "HAPPY";
-  if (t.match(/sorry|tired|exhaust|boring|ugh|meh|sleepy|sad|unfortunately/))
+  if (t.match(/sorry|tired|exhaust|boring|ugh|meh|sleepy|unfortunately|sadly/))
     return "TIRED";
-  if (t.match(/angry|mad|furious|annoyed|frustrated|terrible/))
+  if (t.match(/angry|mad|furious|annoyed|frustrated|wrong|terrible/))
     return "ANGRY";
-
-  // Sinhala keywords (🔥 added)
-  if (text.match(/සතුටු|හරි සතුටුයි|නියමයි|ලස්සනයි|හරි හොඳයි/))
-    return "HAPPY";
-
-  if (text.match(/දුකයි|කණගාටුයි|අමාරුයි|බෝරයි|නරකයි/))
-    return "TIRED";
-
-  if (text.match(/තරහයි|කෝපයි|හිත අමාරුයි|වැරදි/))
-    return "ANGRY";
-
   return "DEFAULT";
 }
 
@@ -66,8 +53,8 @@ function pcmToWav(pcm, sampleRate) {
   return Buffer.concat([header, pcm]);
 }
 
-// ── Pitch shift (balanced for Sinhala clarity) ───────────────
-function pitchUp(pcm, factor = 1.15) {
+// ── NEW: Pitch shift function (chipmunk effect) ──────────────
+function pitchUp(pcm, factor = 1.3) {
   const inSamples = pcm.length / 2;
   const outSamples = Math.floor(inSamples / factor);
   const out = Buffer.alloc(outSamples * 2);
@@ -85,108 +72,84 @@ app.post("/voice", async (req, res) => {
     const audioBuffer = req.body;
     if (!audioBuffer || audioBuffer.length < 100)
       return res.status(400).send("No audio");
-
     console.log(`🎤 Received ${audioBuffer.length} bytes`);
 
     // ── STT ──────────────────────────────────────────────────
     const sttForm = new FormData();
     sttForm.append("file", audioBuffer, { filename: "audio.wav", contentType: "audio/wav" });
     sttForm.append("model", "whisper-1");
-
     const sttResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, ...sttForm.getHeaders() },
       body: sttForm,
     });
-
     const sttJson = await sttResp.json();
-
     if (!sttJson.text?.trim()) {
       console.error("❌ STT Failed:", JSON.stringify(sttJson));
       return res.status(500).send("STT failed");
     }
-
-    console.log("🗣 User:", sttJson.text);
+    console.log("🗣  User:", sttJson.text);
 
     // ── GPT ──────────────────────────────────────────────────
     const llmResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
-            content: "You are a tiny cute robot named Mandy. Always reply ONLY in Sinhala (සිංහල). Use simple spoken Sinhala (like friends talking), not formal language. Be playful, cheerful, and expressive."
+            content: "You are a tiny cute robot companion named Mandy. Speak in a playful, cheerful, energetic, childlike tone. Use short sentences, expressive words, and sometimes cute sounds like 'yay!', 'hehe!', or 'wooo!'. Keep responses lively and friendly like a small adorable robot."
           },
-          {
-            role: "user",
-            content: sttJson.text
-          }
+          { role: "user", content: sttJson.text },
         ],
       }),
     });
-
     const llmJson = await llmResp.json();
-
-    if (!llmJson.choices?.[0])
-      return res.status(500).send("GPT failed");
-
+    if (!llmJson.choices?.[0]) return res.status(500).send("GPT failed");
     const answer = llmJson.choices[0].message.content.trim();
-
     console.log("🤖 GPT:", answer);
 
-    // ── Emotion detection ─────────────────────────────────────
+    // ── Detect emotion from response ─────────────────────────
     const emotion = detectEmotion(answer);
     console.log(`😊 Emotion: ${emotion}`);
 
-    // ── TTS ──────────────────────────────────────────────────
+    // ── TTS → pitch → downsample to 8kHz ─────────────────────
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini-tts",
         voice: "nova",
-        input: `Say this clearly in Sinhala in a cute, soft, playful tiny robot voice: ${answer}`,
+        input: `Say this in a cute, high-pitched, playful, energetic, tiny robot voice: ${answer}`,
         response_format: "pcm",
-        speed: 0.9
+        speed: 0.7
       }),
     });
-
     if (!ttsResp.ok) {
       console.error("❌ TTS Failed:", await ttsResp.text());
       return res.status(500).send("TTS failed");
     }
 
     const pcm24k = Buffer.from(await ttsResp.arrayBuffer());
-    const pitched = pitchUp(pcm24k, 1.15);
+    const pitched = pitchUp(pcm24k, 1.3);   // 🔥 chipmunk effect
     const pcm8k  = downsample24to8(pitched);
     const wav8k  = pcmToWav(pcm8k, 8000);
 
-    console.log(`🔊 Audio ready | Emotion: ${emotion}`);
+    console.log(`🔊 ${pcm24k.length}B → ${wav8k.length}B (8kHz) | Emotion: ${emotion}`);
 
+    // Send emotion in header — ESP32 reads this to set eye expression
     res.setHeader("Content-Type", "audio/wav");
     res.setHeader("Content-Length", wav8k.length);
     res.setHeader("X-Emotion", emotion);
     res.setHeader("Connection", "close");
-
     res.end(wav8k);
-
     console.log("✅ Done.");
 
   } catch (err) {
     console.error("❌ Error:", err.message);
-    if (!res.headersSent)
-      res.status(500).send("Server Error");
+    if (!res.headersSent) res.status(500).send("Server Error");
   }
 });
 
-app.listen(PORT, () =>
-  console.log(`✅ Robot server running on port ${PORT}`)
-);
+app.listen(PORT, () => console.log(`✅ Robot server running on port ${PORT}`));
