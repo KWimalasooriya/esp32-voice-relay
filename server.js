@@ -53,6 +53,20 @@ function pcmToWav(pcm, sampleRate) {
   return Buffer.concat([header, pcm]);
 }
 
+// ── NEW: Pitch shift function (chipmunk effect) ──────────────
+function pitchUp(pcm, factor = 1.3) {
+  const inSamples = pcm.length / 2;
+  const outSamples = Math.floor(inSamples / factor);
+  const out = Buffer.alloc(outSamples * 2);
+
+  for (let i = 0; i < outSamples; i++) {
+    const srcIndex = Math.floor(i * factor);
+    const sample = pcm.readInt16LE(srcIndex * 2);
+    out.writeInt16LE(sample, i * 2);
+  }
+  return out;
+}
+
 app.post("/voice", async (req, res) => {
   try {
     const audioBuffer = req.body;
@@ -83,7 +97,10 @@ app.post("/voice", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "You are a cute robot companion named Robo. You are warm, expressive, and friendly. Reply naturally like a close friend." },
+          {
+            role: "system",
+            content: "You are a tiny cute robot companion named Mandy. Speak in a playful, cheerful, energetic, childlike tone. Use short sentences, expressive words, and sometimes cute sounds like 'yay!', 'hehe!', or 'wooo!'. Keep responses lively and friendly like a small adorable robot."
+          },
           { role: "user", content: sttJson.text },
         ],
       }),
@@ -97,15 +114,16 @@ app.post("/voice", async (req, res) => {
     const emotion = detectEmotion(answer);
     console.log(`😊 Emotion: ${emotion}`);
 
-    // ── TTS → downsample to 8kHz ─────────────────────────────
+    // ── TTS → pitch → downsample to 8kHz ─────────────────────
     const ttsResp = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini-tts",
         voice: "nova",
-        input: answer,
+        input: `Say this in a cute, high-pitched, playful, energetic, tiny robot voice: ${answer}`,
         response_format: "pcm",
+        speed: 1.3
       }),
     });
     if (!ttsResp.ok) {
@@ -114,7 +132,8 @@ app.post("/voice", async (req, res) => {
     }
 
     const pcm24k = Buffer.from(await ttsResp.arrayBuffer());
-    const pcm8k  = downsample24to8(pcm24k);
+    const pitched = pitchUp(pcm24k, 1.4);   // 🔥 chipmunk effect
+    const pcm8k  = downsample24to8(pitched);
     const wav8k  = pcmToWav(pcm8k, 8000);
 
     console.log(`🔊 ${pcm24k.length}B → ${wav8k.length}B (8kHz) | Emotion: ${emotion}`);
